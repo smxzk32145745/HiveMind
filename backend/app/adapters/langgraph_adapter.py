@@ -166,7 +166,8 @@ class LangGraphAdapter(OrchestratorAdapter):
         try:
             tools = resolve_tools(tool_keys) if tool_keys else []
         except KeyError as exc:
-            return AdapterResult(status=RunStatus.FAILED, error=str(exc))
+            message = exc.args[0] if exc.args else str(exc)
+            return AdapterResult(status=RunStatus.FAILED, error=str(message))
 
         try:
             graph_spec = GraphSpec.from_config(config.get("graph"))
