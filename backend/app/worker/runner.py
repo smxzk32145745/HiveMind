@@ -92,22 +92,37 @@ async def _consume_loop(
         finally:
             slots.release()
 
+    consumer = queue.consume()
+    aiter = consumer.__aiter__()
     try:
-        async for lease in queue.consume():
+        while True:
             if stop.is_set():
                 break
+
             await slots.acquire()
             if stop.is_set():
                 slots.release()
                 break
+
+            try:
+                lease = await aiter.__anext__()
+            except StopAsyncIteration:
+                slots.release()
+                break
+            except Exception:
+                slots.release()
+                raise
+
             task = asyncio.create_task(_run_job(lease))
             in_flight.add(task)
             task.add_done_callback(in_flight.discard)
     finally:
+        aclose = getattr(consumer, "aclose", None)
+        if aclose is not None:
+            await aclose()
         if in_flight:
             logger.info("worker.draining", pending=len(in_flight))
             await asyncio.gather(*in_flight, return_exceptions=True)
-
 
 async def run_forever() -> None:
     setup_logging()
