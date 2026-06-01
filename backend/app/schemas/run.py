@@ -16,6 +16,20 @@ class RunCreate(BaseModel):
     )
 
 
+class RunRetry(BaseModel):
+    checkpoint_index: int | None = Field(
+        default=None,
+        description="Resume from this checkpoint; latest when omitted.",
+    )
+
+
+class RunResume(BaseModel):
+    input: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Human approval payload merged into the run input.",
+    )
+
+
 class ToolCallRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -90,6 +104,7 @@ EventType = Literal[
     "run.completed",
     "run.failed",
     "run.cancelled",
+    "run.waiting_human",
     "step.started",
     "step.updated",
     "step.completed",

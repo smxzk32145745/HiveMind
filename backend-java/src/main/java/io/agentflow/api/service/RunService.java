@@ -4,6 +4,9 @@ import io.agentflow.api.dto.CheckpointResponse;
 import io.agentflow.api.dto.MessageResponse;
 import io.agentflow.api.dto.RunCreateRequest;
 import io.agentflow.api.dto.RunResponse;
+import io.agentflow.api.dto.RunResumeRequest;
+import io.agentflow.api.dto.RunRetryRequest;
+import io.agentflow.api.entity.CheckpointEntity;
 import io.agentflow.api.dto.StepResponse;
 import io.agentflow.api.dto.ToolCallResponse;
 import io.agentflow.api.entity.AgentEntity;
@@ -105,6 +108,79 @@ public class RunService {
         cancelSignal.requestCancel(run.getId());
         // We do not flip the row to CANCELLED here: the worker owns the
         // transition so steps/messages can be flushed first.
+    }
+
+    @Transactional
+    public RunResponse retry(String id, RunRetryRequest req) {
+        RunEntity run = runs.findById(id).orElseThrow(() -> new RunNotFoundException(id));
+        if (run.getStatus() != RunStatus.FAILED) {
+            throw new RunConflictException(
+                    "Cannot retry run " + id + " in status " + run.getStatus().wire());
+        }
+
+        List<CheckpointEntity> cps = checkpoints.findAllByRunIdOrderByIndexAsc(run.getId());
+        Map<String, Object> checkpointState = null;
+        Integer checkpointIndex = null;
+        if (!cps.isEmpty()) {
+            Integer requested = req != null ? req.getCheckpointIndex() : null;
+            CheckpointEntity chosen;
+            if (requested != null) {
+                chosen = cps.stream()
+                        .filter(cp -> cp.getIndex() == requested)
+                        .findFirst()
+                        .orElseThrow(() -> new RunConflictException(
+                                "Cannot retry run " + id + " (checkpoint " + requested + " missing)"));
+            } else {
+                chosen = cps.get(cps.size() - 1);
+            }
+            checkpointState = chosen.getState();
+            checkpointIndex = chosen.getIndex();
+        }
+
+        Map<String, Object> meta = ResumeMetadata.withoutResume(run.getMetadata());
+        ResumeMetadata.mergeInto(
+                meta, ResumeMetadata.retry(checkpointState, checkpointIndex));
+        run.setStatus(RunStatus.PENDING);
+        run.setError(null);
+        run.setMetadata(meta);
+        RunEntity saved = runs.save(run);
+        enqueueJobAfterCommit(saved.getId(), saved.getAgentId(), saved.getAdapter());
+        return toResponse(saved);
+    }
+
+    @Transactional
+    public RunResponse resume(String id, RunResumeRequest req) {
+        RunEntity run = runs.findById(id).orElseThrow(() -> new RunNotFoundException(id));
+        if (run.getStatus() != RunStatus.WAITING_HUMAN) {
+            throw new RunConflictException(
+                    "Cannot resume run " + id + " in status " + run.getStatus().wire());
+        }
+
+        Map<String, Object> humanInput =
+                req != null && req.getInput() != null ? req.getInput() : Map.of();
+        if (!humanInput.isEmpty()) {
+            Map<String, Object> merged = new HashMap<>(run.getInput());
+            merged.putAll(humanInput);
+            run.setInput(merged);
+        }
+
+        List<CheckpointEntity> cps = checkpoints.findAllByRunIdOrderByIndexAsc(run.getId());
+        Map<String, Object> checkpointState = null;
+        Integer checkpointIndex = null;
+        if (!cps.isEmpty()) {
+            CheckpointEntity latest = cps.get(cps.size() - 1);
+            checkpointState = latest.getState();
+            checkpointIndex = latest.getIndex();
+        }
+
+        Map<String, Object> meta = ResumeMetadata.withoutResume(run.getMetadata());
+        ResumeMetadata.mergeInto(
+                meta, ResumeMetadata.resume(checkpointState, checkpointIndex, humanInput));
+        run.setStatus(RunStatus.PENDING);
+        run.setMetadata(meta);
+        RunEntity saved = runs.save(run);
+        enqueueJobAfterCommit(saved.getId(), saved.getAgentId(), saved.getAdapter());
+        return toResponse(saved);
     }
 
     /**

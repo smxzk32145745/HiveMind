@@ -22,6 +22,16 @@ export const api = {
   getRun: (id: string) => request<Run>(`/v1/runs/${id}`),
   cancelRun: (id: string) =>
     request<void>(`/v1/runs/${id}/cancel`, { method: "POST" }),
+  retryRun: (id: string, body?: { checkpoint_index?: number }) =>
+    request<Run>(`/v1/runs/${id}/retry`, {
+      method: "POST",
+      body: JSON.stringify(body ?? {}),
+    }),
+  resumeRun: (id: string, body?: { input?: Record<string, unknown> }) =>
+    request<Run>(`/v1/runs/${id}/resume`, {
+      method: "POST",
+      body: JSON.stringify(body ?? {}),
+    }),
   createRun: (body: { agent_id: string; input: Record<string, unknown> }) =>
     request<Run>("/v1/runs", { method: "POST", body: JSON.stringify(body) }),
   listAgents: () => request<Agent[]>("/v1/agents"),

@@ -16,6 +16,7 @@ from typing import Any
 
 from app.models.run import RunStatus
 from app.schemas.run import EventType
+from app.runtime.resume_context import RunResumeContext
 
 EmitCallback = Callable[[EventType, dict[str, Any]], Awaitable[None]]
 
@@ -34,6 +35,8 @@ class AdapterContext:
     agent_config: dict[str, Any]
     input: dict[str, Any]
     metadata: dict[str, Any] = field(default_factory=dict)
+    resume: RunResumeContext | None = None
+    step_index_base: int = 0
     emit: EmitCallback = field(
         default=None  # type: ignore[assignment]
     )
@@ -129,6 +132,19 @@ class AdapterContext:
             {"message": message, "at": datetime.now(UTC).isoformat(), **fields},
         )
 
+    async def emit_checkpoint(
+        self,
+        *,
+        state: dict[str, Any],
+        label: str | None = None,
+        **data: Any,
+    ) -> None:
+        """Persist an adapter-defined snapshot for retry / resume."""
+        await self.emit(
+            "checkpoint.created",
+            {"label": label, "state": state, **data},
+        )
+
 
 @dataclass
 class AdapterResult:
@@ -156,6 +172,22 @@ class OrchestratorAdapter(ABC):
           than letting exceptions escape (the runtime will still convert
           uncaught exceptions, but explicit returns produce nicer audit logs).
         """
+
+    async def retry(self, ctx: AdapterContext) -> AdapterResult:
+        """Re-execute after failure, usually from a checkpoint.
+
+        Override when retry semantics differ from a fresh run. The default
+        delegates to ``run``; read ``ctx.resume`` for checkpoint state.
+        """
+        return await self.run(ctx)
+
+    async def resume(self, ctx: AdapterContext) -> AdapterResult:
+        """Continue after ``waiting_human``.
+
+        Override to merge ``ctx.resume.human_input`` into graph state. The
+        default delegates to ``run``.
+        """
+        return await self.run(ctx)
 
 
 _registry: dict[str, OrchestratorAdapter] = {}

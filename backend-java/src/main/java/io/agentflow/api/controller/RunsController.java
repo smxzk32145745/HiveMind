@@ -2,6 +2,8 @@ package io.agentflow.api.controller;
 
 import io.agentflow.api.dto.RunCreateRequest;
 import io.agentflow.api.dto.RunResponse;
+import io.agentflow.api.dto.RunResumeRequest;
+import io.agentflow.api.dto.RunRetryRequest;
 import io.agentflow.api.service.RunService;
 import jakarta.validation.Valid;
 import java.util.List;
@@ -45,5 +47,19 @@ public class RunsController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void cancel(@PathVariable String id) {
         service.cancel(id);
+    }
+
+    @PostMapping("/{id}/retry")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public RunResponse retry(
+            @PathVariable String id, @RequestBody(required = false) RunRetryRequest payload) {
+        return service.retry(id, payload);
+    }
+
+    @PostMapping("/{id}/resume")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public RunResponse resume(
+            @PathVariable String id, @RequestBody(required = false) RunResumeRequest payload) {
+        return service.resume(id, payload);
     }
 }

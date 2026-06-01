@@ -198,12 +198,9 @@ class LangGraphAdapter(OrchestratorAdapter):
             graph.add_edge(src, dst)
 
         compiled = graph.compile()
-        initial = {
-            "input": ctx.input.get("prompt", ""),
-            "messages": [],
-            "reply": None,
-            "tool_results": {},
-        }
+        initial = _initial_graph_state(ctx)
+        if ctx.resume and ctx.resume.mode == "resume" and ctx.resume.human_input:
+            initial = {**initial, **ctx.resume.human_input}
 
         try:
             final_state = await compiled.ainvoke(initial)
@@ -266,7 +263,15 @@ class LangGraphAdapter(OrchestratorAdapter):
                 )
                 tool_results = dict(state.get("tool_results") or {})
                 tool_results[tool_def.name] = result
-                return {"tool_results": tool_results, "reply": str(result)}
+                next_state = {
+                    "tool_results": tool_results,
+                    "reply": str(result),
+                }
+                await ctx.emit_checkpoint(
+                    label=spec.id,
+                    state={"graph_state": {**state, **next_state}},
+                )
+                return next_state
             except Exception as exc:
                 await ctx.emit_tool_call_completed(
                     step_index=step_idx,
@@ -339,7 +344,12 @@ class LangGraphAdapter(OrchestratorAdapter):
                     {"role": "assistant", "content": reply},
                 ]
             )
-            return {"reply": reply, "messages": messages}
+            next_state = {"reply": reply, "messages": messages}
+            await ctx.emit_checkpoint(
+                label=spec.id,
+                state={"graph_state": {**state, **next_state}},
+            )
+            return next_state
 
         return handler
 
@@ -496,6 +506,20 @@ def _estimate_tokens(text: str) -> int:
     if not text:
         return 0
     return max(1, len(text) // 4)
+
+
+def _initial_graph_state(ctx: AdapterContext) -> dict[str, Any]:
+    default = {
+        "input": ctx.input.get("prompt", ""),
+        "messages": [],
+        "reply": None,
+        "tool_results": {},
+    }
+    if ctx.resume and ctx.resume.checkpoint_state:
+        saved = ctx.resume.checkpoint_state.get("graph_state")
+        if isinstance(saved, dict):
+            return {**default, **saved}
+    return default
 
 
 def _chunk_text(text: str, *, size: int = 8) -> list[str]:

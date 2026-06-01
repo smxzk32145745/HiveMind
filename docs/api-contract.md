@@ -92,6 +92,40 @@ Response: a `Run` populated with `steps`, `messages`, and `checkpoints`.
 Signals the worker to cancel the run. Idempotent; returns 204 whether or not
 the run is already in a terminal state. Returns 404 if the run does not exist.
 
+### `POST /v1/runs/{id}/retry` → 202
+
+Re-queues a **failed** run for another worker attempt. The latest checkpoint is
+used when present; pass an explicit index to resume from an older snapshot.
+
+Request (optional body):
+
+```json
+{
+  "checkpoint_index": 0
+}
+```
+
+Response: a full `Run` record with status `pending` (worker will transition to
+`running`). Returns **404** if the run does not exist, **409** if status is not
+`failed` or the checkpoint index is missing.
+
+### `POST /v1/runs/{id}/resume` → 202
+
+Continues a run in **`waiting_human`** after human approval. The optional body
+is merged into the run's persisted `input` and forwarded to the adapter via
+resume metadata.
+
+Request (optional body):
+
+```json
+{
+  "input": { "approval": "approved" }
+}
+```
+
+Response: a full `Run` record with status `pending`. Returns **404** if missing,
+**409** if status is not `waiting_human`.
+
 ### `GET /v1/events/{run_id}` → 200 `text/event-stream`
 
 Server-Sent Events stream of `RunEvent` records. Stays open until the run
@@ -114,6 +148,7 @@ payload below as `data`:
 The supported `type` values are:
 
 `run.created`, `run.started`, `run.completed`, `run.failed`, `run.cancelled`,
+`run.waiting_human`,
 `step.started`, `step.updated`, `step.completed`, `step.failed`, `token.delta`,
 `message.created`, `tool_call.started`, `tool_call.completed`,
 `checkpoint.created`, `log`.

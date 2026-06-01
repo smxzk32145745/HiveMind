@@ -3,9 +3,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_session
 from app.events import EventBus, get_event_bus
-from app.schemas.run import RunCreate, RunRead
+from app.schemas.run import RunCreate, RunRead, RunResume, RunRetry
 from app.services.run_service import (
     AgentNotFound,
+    RunConflict,
     RunNotFound,
     RunService,
 )
@@ -61,3 +62,33 @@ async def cancel_run(
         await service.cancel_run(run_id)
     except RunNotFound as exc:
         raise HTTPException(status_code=404, detail=f"Run not found: {exc}") from exc
+
+
+@router.post("/{run_id}/retry", response_model=RunRead, status_code=status.HTTP_202_ACCEPTED)
+async def retry_run(
+    run_id: str,
+    payload: RunRetry | None = None,
+    service: RunService = Depends(get_run_service),
+) -> RunRead:
+    try:
+        run = await service.retry_run(run_id, payload)
+    except RunNotFound as exc:
+        raise HTTPException(status_code=404, detail=f"Run not found: {exc}") from exc
+    except RunConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return RunRead.model_validate(run)
+
+
+@router.post("/{run_id}/resume", response_model=RunRead, status_code=status.HTTP_202_ACCEPTED)
+async def resume_run(
+    run_id: str,
+    payload: RunResume | None = None,
+    service: RunService = Depends(get_run_service),
+) -> RunRead:
+    try:
+        run = await service.resume_run(run_id, payload)
+    except RunNotFound as exc:
+        raise HTTPException(status_code=404, detail=f"Run not found: {exc}") from exc
+    except RunConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return RunRead.model_validate(run)
