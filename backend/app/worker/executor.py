@@ -21,7 +21,16 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from app.adapters import AdapterContext, get_adapter
+from app.adapters.base import (
+    AdapterContext,
+    AdapterResult,
+    OrchestratorAdapter,
+    get_adapter,
+)
+from app.runtime.resume_context import (
+    parse_resume_context,
+    without_resume_metadata,
+)
 from app.core.logging import get_logger
 from app.core.telemetry import trace_adapter_run
 from app.db.session import SessionLocal
@@ -69,6 +78,14 @@ class RunExecutor:
                 await self._safe_clear_cancel(run_id)
                 return
 
+            resume_ctx = parse_resume_context(run.metadata_)
+            if resume_ctx is not None:
+                run.metadata_ = without_resume_metadata(dict(run.metadata_ or {}))
+
+            step_index_base = 0
+            if resume_ctx is not None and resume_ctx.mode in ("retry", "resume"):
+                step_index_base = (await service._max_step_index(run.id)) + 1
+
             run.status = RunStatus.RUNNING
             await session.commit()
             await service._broadcast("run.started", run.id, {})
@@ -79,6 +96,8 @@ class RunExecutor:
                 agent_config=agent.config or {},
                 input=run.input,
                 metadata=run.metadata_,
+                resume=resume_ctx,
+                step_index_base=step_index_base,
                 emit=lambda event_type, data: service._handle_event(
                     run.id, event_type, data
                 ),
@@ -134,6 +153,21 @@ class RunExecutor:
                 await asyncio.sleep(0.25)
         except asyncio.CancelledError:
             pass
+
+    async def _invoke_adapter(
+        self,
+        adapter: OrchestratorAdapter,
+        ctx: AdapterContext,
+        resume_ctx: object,
+    ) -> AdapterResult:
+        from app.runtime.resume_context import RunResumeContext
+
+        if isinstance(resume_ctx, RunResumeContext):
+            if resume_ctx.mode == "retry":
+                return await adapter.retry(ctx)
+            if resume_ctx.mode == "resume":
+                return await adapter.resume(ctx)
+        return await adapter.run(ctx)
 
     async def _safe_clear_cancel(self, run_id: str) -> None:
         try:

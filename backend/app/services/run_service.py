@@ -30,7 +30,13 @@ from app.models import (
     Step,
     ToolCall,
 )
-from app.schemas.run import EventType, RunCreate, RunEvent
+from app.schemas.run import EventType, RunCreate, RunEvent, RunResume, RunRetry
+from app.runtime.resume_context import (
+    RunResumeContext,
+    parse_resume_context,
+    resume_metadata,
+    without_resume_metadata,
+)
 from app.worker.cancel import CancelRegistry, get_cancel_registry
 from app.worker.queue import JobQueue, RunJob, get_job_queue
 
@@ -43,6 +49,17 @@ class RunNotFound(Exception):
 
 class AgentNotFound(Exception):
     pass
+
+
+class RunConflict(Exception):
+    """Run status does not allow the requested control action."""
+
+    def __init__(self, run_id: str, status: RunStatus, action: str) -> None:
+        self.run_id = run_id
+        self.status = status
+        self.action = action
+        label = status.value if isinstance(status, RunStatus) else str(status)
+        super().__init__(f"Cannot {action} run {run_id} in status {label}")
 
 
 # Tasks survive beyond a single request, so they are tracked at module scope.
@@ -139,6 +156,83 @@ class RunService:
         finally:
             _running_tasks.pop(run_id, None)
 
+    async def retry_run(self, run_id: str, payload: RunRetry | None = None) -> Run:
+        """Re-queue a failed run, optionally from a checkpoint snapshot."""
+        run = await self._get_run(run_id, with_relations=True)
+        if run.status != RunStatus.FAILED:
+            raise RunConflict(run_id, run.status, "retry")
+
+        checkpoint_state: dict[str, Any] | None = None
+        checkpoint_index: int | None = None
+        if run.checkpoints:
+            req_index = payload.checkpoint_index if payload else None
+            if req_index is not None:
+                match = next(
+                    (cp for cp in run.checkpoints if cp.index == req_index),
+                    None,
+                )
+                if match is None:
+                    raise RunConflict(
+                        run_id, run.status, f"retry (checkpoint {req_index} missing)"
+                    )
+                checkpoint_state = match.state
+                checkpoint_index = match.index
+            else:
+                latest = run.checkpoints[-1]
+                checkpoint_state = latest.state
+                checkpoint_index = latest.index
+
+        meta = without_resume_metadata(dict(run.metadata_ or {}))
+        meta.update(
+            resume_metadata(
+                mode="retry",
+                checkpoint_state=checkpoint_state,
+                checkpoint_index=checkpoint_index,
+            )
+        )
+        run.status = RunStatus.PENDING
+        run.error = None
+        run.metadata_ = meta
+        await self.session.commit()
+
+        await self.start_run(run_id)
+        return await self.get_run(run_id, with_relations=True)
+
+    async def resume_run(self, run_id: str, payload: RunResume | None = None) -> Run:
+        """Continue a run paused for human approval."""
+        run = await self._get_run(run_id, with_relations=True)
+        if run.status != RunStatus.WAITING_HUMAN:
+            raise RunConflict(run_id, run.status, "resume")
+
+        human_input = (payload.input if payload else {}) or {}
+        if human_input:
+            merged = dict(run.input or {})
+            merged.update(human_input)
+            run.input = merged
+
+        checkpoint_state: dict[str, Any] | None = None
+        checkpoint_index: int | None = None
+        if run.checkpoints:
+            latest = run.checkpoints[-1]
+            checkpoint_state = latest.state
+            checkpoint_index = latest.index
+
+        meta = without_resume_metadata(dict(run.metadata_ or {}))
+        meta.update(
+            resume_metadata(
+                mode="resume",
+                checkpoint_state=checkpoint_state,
+                checkpoint_index=checkpoint_index,
+                human_input=human_input or None,
+            )
+        )
+        run.status = RunStatus.PENDING
+        run.metadata_ = meta
+        await self.session.commit()
+
+        await self.start_run(run_id)
+        return await self.get_run(run_id, with_relations=True)
+
     async def cancel_run(self, run_id: str) -> None:
         # Ensure the run exists so the API returns 404 for unknown ids
         # whether or not a worker is currently executing it.
@@ -203,6 +297,12 @@ class RunService:
             await self._broadcast("run.failed", run_id, {"error": error})
         elif status == RunStatus.CANCELLED:
             await self._broadcast("run.cancelled", run_id, {"error": error})
+        elif status == RunStatus.WAITING_HUMAN:
+            await self._broadcast(
+                "run.waiting_human",
+                run_id,
+                {"output": output},
+            )
 
     async def _broadcast(
         self, event_type: EventType, run_id: str, data: dict[str, Any]
@@ -312,6 +412,17 @@ class RunService:
             await self.session.commit()
 
         await self._broadcast(event_type, run_id, data)
+
+    async def _max_step_index(self, run_id: str) -> int:
+        stmt = (
+            select(Step.index)
+            .where(Step.run_id == run_id)
+            .order_by(Step.index.desc())
+            .limit(1)
+        )
+        result = await self.session.execute(stmt)
+        last = result.scalar_one_or_none()
+        return -1 if last is None else last
 
     async def _find_step(self, run_id: str, index: int) -> Step | None:
         stmt = select(Step).where(Step.run_id == run_id, Step.index == index)
