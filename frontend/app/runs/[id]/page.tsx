@@ -119,7 +119,7 @@ export default function RunDetailPage({ params }: PageProps) {
                     {s.tokens_in ?? 0}→{s.tokens_out ?? 0} tok
                   </span>
                 )}
-                {s.cost_usd != null && s.cost_usd > 0 && (
+                {s.cost_usd != null && (
                   <span className="text-xs text-accent font-mono">
                     {formatCostUsd(s.cost_usd)}
                   </span>
