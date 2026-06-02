@@ -10,7 +10,34 @@ interface Props {
   onTerminal?: () => void;
 }
 
+type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "closed";
+
+interface StoredEvent extends RunEvent {
+  clientSeq: number;
+}
+
 const TERMINAL = new Set(["run.completed", "run.failed", "run.cancelled"]);
+
+const EVENT_TYPES = [
+  "run.created",
+  "run.started",
+  "run.completed",
+  "run.failed",
+  "run.cancelled",
+  "step.started",
+  "step.updated",
+  "step.completed",
+  "step.failed",
+  "token.delta",
+  "message.created",
+  "tool_call.started",
+  "tool_call.completed",
+  "checkpoint.created",
+  "log",
+] as const;
+
+const INITIAL_RECONNECT_MS = 1_000;
+const MAX_RECONNECT_MS = 30_000;
 
 function formatEventData(type: string, data: Record<string, unknown>): string {
   if (type === "checkpoint.created") {
@@ -27,51 +54,121 @@ function formatEventData(type: string, data: Record<string, unknown>): string {
   return JSON.stringify(data);
 }
 
+function connectionLabel(status: ConnectionStatus): string {
+  switch (status) {
+    case "connecting":
+      return "connecting…";
+    case "connected":
+      return "live";
+    case "reconnecting":
+      return "reconnecting…";
+    case "closed":
+      return "closed";
+  }
+}
+
 export function EventStream({ runId, onTerminal }: Props) {
-  const [events, setEvents] = useState<RunEvent[]>([]);
+  const [events, setEvents] = useState<StoredEvent[]>([]);
+  const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const bottomRef = useRef<HTMLDivElement>(null);
+  const onTerminalRef = useRef(onTerminal);
+  const seqRef = useRef(0);
+
+  onTerminalRef.current = onTerminal;
 
   useEffect(() => {
-    const url = eventStreamUrl(runId);
-    const source = new EventSource(url);
+    seqRef.current = 0;
+    setEvents([]);
+    setStatus("connecting");
+
+    let cancelled = false;
+    let source: EventSource | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let reconnectAttempt = 0;
+    let terminal = false;
+
+    const clearReconnectTimer = () => {
+      if (reconnectTimer != null) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+    };
+
+    const closeSource = () => {
+      if (!source) return;
+      EVENT_TYPES.forEach((t) => source!.removeEventListener(t, onMessage));
+      source.close();
+      source = null;
+    };
+
+    const finishTerminal = () => {
+      terminal = true;
+      clearReconnectTimer();
+      closeSource();
+      if (!cancelled) setStatus("closed");
+      onTerminalRef.current?.();
+    };
+
+    const scheduleReconnect = () => {
+      if (cancelled || terminal) return;
+      setStatus("reconnecting");
+      const delay = Math.min(
+        INITIAL_RECONNECT_MS * 2 ** reconnectAttempt,
+        MAX_RECONNECT_MS,
+      );
+      reconnectAttempt += 1;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, delay);
+    };
 
     const onMessage = (event: MessageEvent) => {
+      if (cancelled || terminal) return;
       try {
         const data: RunEvent = JSON.parse(event.data);
-        setEvents((prev) => [...prev, data]);
+        const clientSeq = ++seqRef.current;
+        setEvents((prev) => [...prev, { ...data, clientSeq }]);
         if (TERMINAL.has(data.type)) {
-          onTerminal?.();
-          source.close();
+          finishTerminal();
         }
       } catch {
         // ignore malformed events
       }
     };
 
-    const eventTypes = [
-      "run.created",
-      "run.started",
-      "run.completed",
-      "run.failed",
-      "run.cancelled",
-      "step.started",
-      "step.updated",
-      "step.completed",
-      "step.failed",
-      "token.delta",
-      "message.created",
-      "tool_call.started",
-      "tool_call.completed",
-      "checkpoint.created",
-      "log",
-    ];
-    eventTypes.forEach((t) => source.addEventListener(t, onMessage));
+    const connect = () => {
+      if (cancelled || terminal) return;
+
+      closeSource();
+      setStatus(reconnectAttempt === 0 ? "connecting" : "reconnecting");
+
+      const next = new EventSource(eventStreamUrl(runId));
+      source = next;
+
+      next.addEventListener("open", () => {
+        if (cancelled || terminal) return;
+        reconnectAttempt = 0;
+        setStatus("connected");
+      });
+
+      EVENT_TYPES.forEach((t) => next.addEventListener(t, onMessage));
+
+      next.onerror = () => {
+        if (cancelled || terminal) return;
+        closeSource();
+        scheduleReconnect();
+      };
+    };
+
+    connect();
 
     return () => {
-      eventTypes.forEach((t) => source.removeEventListener(t, onMessage));
-      source.close();
+      cancelled = true;
+      clearReconnectTimer();
+      closeSource();
     };
-  }, [runId, onTerminal]);
+  }, [runId]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -79,15 +176,30 @@ export function EventStream({ runId, onTerminal }: Props) {
 
   return (
     <div className="rounded border border-border bg-bg font-mono text-xs">
-      <div className="px-3 py-2 border-b border-border text-muted">
-        Live event stream · {events.length} events
+      <div className="px-3 py-2 border-b border-border text-muted flex items-center justify-between gap-3">
+        <span>Live event stream · {events.length} events</span>
+        <span
+          className={
+            status === "connected"
+              ? "text-good"
+              : status === "closed"
+                ? "text-muted"
+                : "text-warn"
+          }
+        >
+          {connectionLabel(status)}
+        </span>
       </div>
       <div className="max-h-80 overflow-y-auto p-3 space-y-1">
         {events.length === 0 ? (
-          <div className="text-muted">Waiting for events…</div>
+          <div className="text-muted">
+            {status === "reconnecting"
+              ? "Connection lost — retrying…"
+              : "Waiting for events…"}
+          </div>
         ) : (
-          events.map((e, i) => (
-            <div key={i} className="flex gap-3">
+          events.map((e) => (
+            <div key={e.clientSeq} className="flex gap-3">
               <span className="text-muted shrink-0">
                 {new Date(e.at).toLocaleTimeString()}
               </span>
