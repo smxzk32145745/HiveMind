@@ -92,7 +92,7 @@ See:
 ## Quick start
 
 Requirements: Docker, [`uv`](https://github.com/astral-sh/uv), Node.js 20+,
-JDK 21, and Maven 3.9+..
+JDK 21 and Maven 3.9+.
 
 ```bash
 # Infrastructure
