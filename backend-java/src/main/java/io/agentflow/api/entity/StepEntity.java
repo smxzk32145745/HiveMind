@@ -4,8 +4,6 @@ import com.github.f4b6a3.ulid.UlidCreator;
 import jakarta.persistence.Column;
 import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
@@ -32,7 +30,6 @@ public class StepEntity {
     private String node;
 
     @Column(nullable = false, length = 32)
-    @Enumerated(EnumType.STRING)
     private RunStatus status = RunStatus.RUNNING;
 
     @Column(name = "input", nullable = false, columnDefinition = "TEXT")
