@@ -1,20 +1,18 @@
 # AgentFlow 后续开发计划
 
-优化方向、可引入的先进技术，以及分阶段路线图。架构与数据模型见
-[architecture.md](architecture.md) 与 [data-model.md](data-model.md)。
+架构与数据模型见 [architecture.md](architecture.md) 与 [data-model.md](data-model.md)。
+
+**最后核对：** 2026-06-03
 
 ## 优化方向
 
 按投入产出比排序：
 
-1. **前端用事件驱动替代轮询。** Run 列表每 3s、详情页每 2s 轮询；改为 SSE/WebSocket
-   推送状态变更。
-2. **Worker 并发与背压。** 当前单 job 串行；增加可配置并行度、队列深度指标与消费者延迟告警。
-3. **增强 LangGraph adapter。** 支持多节点 graph、工具注册、token/延迟写入 Step、流式 token 事件。
-4. **实现 retry / resume。** 数据模型已有 Checkpoint 与 `waiting_human`，补齐 HTTP 动作与 adapter 钩子。
-5. **事件总线持久化。** Redis pub/sub 无订阅者时会丢消息；支持 `Last-Event-ID` 重放。
-6. **可观测性基线。** 在 API → worker → adapter 链路上接入 OpenTelemetry，导出 RED 指标。
-7. **控制台体验。** Step 时间线、ToolCall 检查面板、token/成本汇总、Checkpoint 标记。
+1. **事件总线持久化。** Redis pub/sub 无订阅者时会丢消息；支持 `Last-Event-ID` 重放。
+2. **队列 OTel 指标与背压。** 深度/消费者延迟已有日志告警，需导出为 `agentflow.queue.*` 指标；补充 worker 利用率、p95 看板。
+3. **控制台调试体验。** Step 可视化时间线、独立 ToolCall 检查面板。
+4. **LangGraph adapter 扩展。** 更多 graph 模式、MCP 工具协议集成。
+5. **双向流式传输。** WebSocket / WebTransport + SSE 降级，支持双向取消与审批。
 
 ## 可引入的先进技术
 
@@ -23,7 +21,6 @@
 | 长任务编排 | Temporal、Restate | 超越 Redis ACK 的 durable timer、saga、人工审批 |
 | LLM 可观测 | Langfuse、Arize Phoenix、OTel GenAI | 在现有 Step/Message 之上做 trace 与 eval |
 | 工具协议 | MCP | 标准化 adapter 工具面 |
-| 流式传输 | WebTransport / WebSocket + SSE 降级 | 双向取消、审批、token 流 |
 | 向量 / 记忆 | pgvector、LanceDB | Agent 记忆与 RAG，与 adapter 解耦 |
 | 认证与多租户 | OIDC + `tenant_id` | RBAC、审计、团队隔离 |
 | SDK 生成 | OpenAPI → TS/Python | Java、FastAPI、前端类型自动同步 |
@@ -31,26 +28,17 @@
 
 ## 路线图
 
-### Phase 1 — 运行时核心 ✅（已完成）
+### Phase 2 收尾 — 可观测性与运行控制（2026 Q2）
 
-- [x] 统一数据模型与 Adapter 接口
-- [x] Echo / LangGraph adapter、SSE、Next.js 控制台 MVP
-- [x] Redis Streams 任务队列（含 DLQ）与取消协议
-- [x] Java/Spring Boot API 与独立 Python worker
+**目标：** 控制台调试闭环、事件可靠性与运行时指标。
 
-### Phase 2 — 可观测性与运行控制（2026 Q2）
+- [ ] Step 时间线组件（节点延迟与状态流转）
+- [ ] 独立 ToolCall 检查面板（参数/结果/错误结构化浏览）
+- [ ] SSE 事件重放（`Last-Event-ID` / 持久化 event log）
+- [ ] 队列深度、worker 利用率导出为 OTel/Prometheus 指标
+- [ ] p95 耗时仪表盘与告警
 
-**目标：** 在控制台内完成调试、重试与成本核算。
-
-- [ ] Step 时间线组件（节点延迟与状态）
-- [x] Adapter 写入 token/成本；Run 级汇总
-- [ ] `POST /v1/runs/{id}/retry` 与 `POST /v1/runs/{id}/resume`
-- [ ] SSE 事件重放（`Last-Event-ID`）
-- [x] OpenTelemetry 全链路 trace（API → worker → adapter，RED 指标 + trace 传播）
-- [ ] 队列深度、worker 利用率、p95 耗时等指标
-- [x] Compose 集成测试与 CI（`integration` job）
-
-**验收：** 失败 Run 可从 checkpoint 重试；控制台展示成本与时间线；Jaeger/Tempo 可见 trace。
+**验收：** 控制台展示可视化时间线；断连 SSE 可补全事件；队列指标可在 Grafana 查看。
 
 ### Phase 3 — 可扩展性与 SDK（2026 Q3）
 
@@ -86,14 +74,22 @@
 - [ ] Agent 记忆服务（对话 + 文档存储）
 - [ ] 模型路由 / fallback 策略
 - [ ] 定时与批量 Run
-- [ ] 细粒度流式：token delta、推理块、多模态附件
+- [ ] 细粒度流式：推理块、多模态附件（DB 持久化）
+
+## 建议下一步
+
+1. **SSE `Last-Event-ID` 重放** — `backend/app/events/bus.py`、`backend/app/api/v1/events.py`
+2. **队列 OTel 指标** — `backend/app/worker/monitor.py`、`backend/app/core/telemetry.py`
+3. **Step 时间线 + ToolCall 面板** — `frontend/app/runs/`、`frontend/components/`
+4. **人工审批 UI** — 基于 `waiting_human` + resume API，Phase 4 前可先做雏形
 
 ## 从哪里入手
 
 | 目标 | 入口 |
 | --- | --- |
-| 修控制台 | `frontend/app/runs/` |
+| 事件重放 | `backend/app/events/bus.py`、`backend/app/api/v1/events.py` |
+| 修控制台 | `frontend/app/runs/`、`frontend/components/` |
 | 新 adapter | `backend/app/adapters/` + `__init__.py` 注册 |
 | 扩展 API | 先改 [api-contract.md](api-contract.md)，再同步 Java + Python |
-| 队列可靠性 | `backend/app/worker/queue.py`、`backend-java/.../jobs/` |
-| 可观测性 | OpenTelemetry 中间件（双 API + worker） |
+| 队列可靠性 | `backend/app/worker/queue.py`、`backend/app/worker/monitor.py` |
+| 可观测性 | `backend/app/core/telemetry.py`、Java `RedMetricsFilter` |
