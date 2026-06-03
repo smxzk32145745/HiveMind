@@ -13,11 +13,11 @@ public class RunStatusConverter implements AttributeConverter<RunStatus, String>
 
     @Override
     public String convertToDatabaseColumn(RunStatus attribute) {
-        return attribute == null ? null : attribute.wire();
+        return attribute == null ? null : attribute.name().toLowerCase(java.util.Locale.ROOT);
     }
 
     @Override
     public RunStatus convertToEntityAttribute(String dbData) {
-        return RunStatus.fromWire(dbData);
+        return dbData == null ? null : RunStatus.valueOf(dbData.toUpperCase(java.util.Locale.ROOT));
     }
 }
