@@ -133,6 +133,11 @@ reaches a terminal state (`run.completed`, `run.failed`, `run.cancelled`) or
 the client disconnects. The server sends `event: ping` heartbeats roughly
 every 15 seconds.
 
+On reconnect, send the standard `Last-Event-ID` header or `?last_event_id=`
+query parameter to replay missed events before resuming the live stream. Each
+persisted frame includes an SSE `id` field; the log is stored in Redis Stream
+`agentflow:run:{run_id}:log` (or in-memory when Redis is unset).
+
 Each SSE frame uses the event type as the SSE `event` field and the JSON
 payload below as `data`:
 

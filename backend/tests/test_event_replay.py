@@ -176,11 +176,11 @@ async def test_redis_event_bus_replay_with_fakeredis():
     run_id = "run-redis-1"
     id1 = await bus.publish(_event("run.created", run_id))
     id2 = await bus.publish(_event("run.started", run_id))
-    await bus.publish(_event("run.completed", run_id, output={}))
+    id3 = await bus.publish(_event("run.completed", run_id, output={}))
 
     replayed = [event_id async for event_id, _ in bus.replay(run_id, id1)]
-    assert replayed == [id2]
-    assert id1 != id2
+    assert replayed == [id2, id3]
+    assert id1 not in replayed
 
     full = [event.type async for _, event in bus.replay(run_id, None)]
     assert full == ["run.created", "run.started", "run.completed"]
